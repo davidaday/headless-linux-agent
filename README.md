@@ -1,20 +1,22 @@
-# headless-linux-agent
+# syncro-agent
 
 Installs the Syncro RMM agent on a headless Linux machine and confirms that `syncro-agent.service` is running.
 
 ## Run
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/davidaday/headless-linux-agent/main/install-syncro-agent.sh | sudo bash
+curl -fsSL https://davidaday.github.io/syncro-agent/install | sudo bash
 ```
 
 The script prompts for the installer link (Syncro > Agent download > Linux > copy link). To skip the prompt, pass the link as an argument:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/davidaday/headless-linux-agent/main/install-syncro-agent.sh | sudo bash -s -- "<installer link>"
+curl -fsSL https://davidaday.github.io/syncro-agent/install | sudo bash -s -- "<installer link>"
 ```
 
 Quote the link, because it contains `&`.
+
+If GitHub Pages is unavailable, use the raw file instead: `https://raw.githubusercontent.com/davidaday/syncro-agent/main/install`.
 
 ## What it does
 

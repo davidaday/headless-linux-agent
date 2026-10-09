@@ -2,9 +2,9 @@
 # Download and install the Syncro headless Linux agent, then verify the service.
 #
 # Usage:
-#   sudo ./install-syncro-agent.sh [options] ["<installer link>"]
-#   curl -fsSL <raw url>/install-syncro-agent.sh | sudo bash
-#   curl -fsSL <raw url>/install-syncro-agent.sh | sudo bash -s -- "<installer link>"
+#   sudo ./install [options] ["<installer link>"]
+#   curl -fsSL https://davidaday.github.io/syncro-agent/install | sudo bash
+#   curl -fsSL https://davidaday.github.io/syncro-agent/install | sudo bash -s -- "<installer link>"
 #
 # Options:
 #   --skip-os-check      Always pass --skip-os-check to the installer.
@@ -24,7 +24,7 @@ die()  { printf '\nFAILURE: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF_USAGE'
-Usage: install-syncro-agent.sh [--skip-os-check | --no-skip-os-check] ["<installer link>"]
+Usage: install [--skip-os-check | --no-skip-os-check] ["<installer link>"]
 Prompts for the installer link if none is given.
 EOF_USAGE
 }
