@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Download and install the Syncro headless Linux agent, then verify the service.
+#
+# Usage:
+#   sudo ./install-syncro-agent.sh [options] ["<installer link>"]
+#   curl -fsSL <raw url>/install-syncro-agent.sh | sudo bash
+#   curl -fsSL <raw url>/install-syncro-agent.sh | sudo bash -s -- "<installer link>"
+#
+# Options:
+#   --skip-os-check      Always pass --skip-os-check to the installer.
+#   --no-skip-os-check   Never pass --skip-os-check (default: auto-detect).
+#   -h, --help           Show this help.
+
+set -euo pipefail
+
+SERVICE="syncro-agent.service"
+# Distro IDs the Syncro installer supports without --skip-os-check.
+SUPPORTED_IDS="ubuntu debian rhel centos fedora"
+VERIFY_TIMEOUT=30
+
+info() { printf '==> %s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+die()  { printf '\nFAILURE: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF_USAGE'
+Usage: install-syncro-agent.sh [--skip-os-check | --no-skip-os-check] ["<installer link>"]
+Prompts for the installer link if none is given.
+EOF_USAGE
+}
+
+# --- Arguments --------------------------------------------------------------
+skip_os_mode="auto"
+link=""
+for arg in "$@"; do
+    case "$arg" in
+        --skip-os-check)    skip_os_mode="yes" ;;
+        --no-skip-os-check) skip_os_mode="no" ;;
+        -h|--help)          usage; exit 0 ;;
+        -*)                 die "Unknown option: $arg" ;;
+        *)                  link="$arg" ;;
+    esac
+done
+
+# --- Root -------------------------------------------------------------------
+if [[ $EUID -ne 0 ]]; then
+    if [[ -f "${BASH_SOURCE[0]:-}" ]] && command -v sudo >/dev/null 2>&1; then
+        exec sudo bash "${BASH_SOURCE[0]}" "$@"
+    fi
+    die "This script must be run as root (try: sudo bash)."
+fi
+
+command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required."
+
+# --- Already installed? -----------------------------------------------------
+if systemctl list-unit-files "$SERVICE" --no-legend 2>/dev/null | grep -q .; then
+    if systemctl is-active --quiet "$SERVICE"; then
+        printf '\nSUCCESS: Syncro agent is already installed and %s is running. Nothing to do.\n' "$SERVICE"
+        exit 0
+    fi
+    die "$SERVICE exists but is not running. Check: systemctl status $SERVICE"
+fi
+
+# --- Installer link ---------------------------------------------------------
+if [[ -z "$link" ]]; then
+    # Read from the terminal so this works when the script is piped into bash.
+    { exec 3<>/dev/tty; } 2>/dev/null \
+        || die "No installer link given and no terminal to prompt on. Pass the link as an argument."
+    printf 'Paste the Syncro Linux installer link: ' >&3
+    IFS= read -r link <&3
+    exec 3>&-
+fi
+# Trim whitespace and any surrounding quotes from a pasted link.
+link="$(printf '%s' "$link" | sed -e 's/^[[:space:]"'\''“”]*//' -e 's/[[:space:]"'\''“”]*$//')"
+[[ "$link" == https://*download_linux_agent_installers* ]] \
+    || die "That doesn't look like a Syncro Linux installer link (expected https://...download_linux_agent_installers?...)."
+
+# --- Download ---------------------------------------------------------------
+workdir="$(mktemp -d /tmp/syncro-install.XXXXXX)"
+trap 'rm -rf "$workdir"' EXIT
+cd "$workdir"
+
+info "Downloading installer..."
+if command -v curl >/dev/null 2>&1; then
+    curl -fL -OJ --retry 3 "$link" || die "Download failed. The link may have expired; copy a fresh one from Syncro."
+elif command -v wget >/dev/null 2>&1; then
+    wget -q --content-disposition "$link" || die "Download failed. The link may have expired; copy a fresh one from Syncro."
+else
+    die "Neither curl nor wget is installed."
+fi
+
+shopt -s nullglob
+files=(SyncroInstallerLinux-*.run)
+shopt -u nullglob
+if [[ ${#files[@]} -ne 1 ]]; then
+    die "Expected one SyncroInstallerLinux-*.run file, found: $(find . -mindepth 1 -maxdepth 1 -printf '%f ')"
+fi
+installer="$workdir/${files[0]}"
+# The installer reads its registration token from the [[...]] part of its filename.
+[[ "${files[0]}" == *'[['*']]'* ]] || die "Installer filename has no registration token: ${files[0]}"
+head -n1 "$installer" | grep -q '^#!' || die "Downloaded file is not an installer script (the link may have expired)."
+info "Downloaded ${files[0]}"
+
+# --- OS check ---------------------------------------------------------------
+installer_args=()
+os_id="unknown"; os_name="unknown"
+if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    os_id="$(. /etc/os-release && printf '%s' "${ID:-unknown}")"
+    # shellcheck disable=SC1091
+    os_name="$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-$os_id}")"
+fi
+case "$skip_os_mode" in
+    yes) installer_args+=(--skip-os-check) ;;
+    no)  ;;
+    auto)
+        if [[ " $SUPPORTED_IDS " != *" $os_id "* ]]; then
+            warn "$os_name is not on Syncro's supported list; adding --skip-os-check."
+            installer_args+=(--skip-os-check)
+        fi
+        ;;
+esac
+info "Detected OS: $os_name"
+
+# --- Install ----------------------------------------------------------------
+chmod +x "$installer"
+info "Running installer ${installer_args[*]:-}"
+set +e
+"$installer" ${installer_args[@]+"${installer_args[@]}"}
+rc=$?
+set -e
+
+# --- Verify -----------------------------------------------------------------
+info "Verifying $SERVICE..."
+active=""
+for ((i = 0; rc == 0 && i < VERIFY_TIMEOUT; i++)); do
+    if systemctl is-active --quiet "$SERVICE"; then active=1; break; fi
+    sleep 1
+done
+enabled="$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)"
+
+if [[ $rc -eq 0 && -n "$active" ]]; then
+    printf '\nSUCCESS: Syncro agent installed on %s.\n' "$(hostname)"
+    printf '  Service: %s is active (enabled: %s)\n' "$SERVICE" "${enabled:-unknown}"
+    exit 0
+fi
+
+printf '\n' >&2
+[[ $rc -ne 0 ]] && warn "Installer exited with code $rc."
+[[ -z "$active" ]] && warn "$SERVICE is not active (enabled: ${enabled:-not found})."
+if command -v journalctl >/dev/null 2>&1 && [[ -n "$enabled" ]]; then
+    printf '\nLast service log lines:\n' >&2
+    journalctl -u "$SERVICE" -n 20 --no-pager >&2 || true
+fi
+die "Syncro agent installation did not complete."
