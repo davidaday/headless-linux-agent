@@ -13,7 +13,8 @@
 
 set -euo pipefail
 
-SERVICE="syncro-agent.service"
+# The installer creates syncro.service; older builds may use syncro-agent.service.
+SERVICE_CANDIDATES="syncro.service syncro-agent.service"
 # Distro IDs the Syncro installer supports without --skip-os-check.
 SUPPORTED_IDS="ubuntu debian rhel centos fedora"
 VERIFY_TIMEOUT=30
@@ -21,6 +22,17 @@ VERIFY_TIMEOUT=30
 info() { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die()  { printf '\nFAILURE: %s\n' "$*" >&2; exit 1; }
+
+# Print the first installed Syncro unit, or nothing.
+find_service() {
+    local unit
+    for unit in $SERVICE_CANDIDATES; do
+        if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | grep -q .; then
+            printf '%s' "$unit"
+            return
+        fi
+    done
+}
 
 usage() {
     cat <<'EOF_USAGE'
@@ -53,7 +65,8 @@ fi
 command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required."
 
 # --- Already installed? -----------------------------------------------------
-if systemctl list-unit-files "$SERVICE" --no-legend 2>/dev/null | grep -q .; then
+SERVICE="$(find_service)"
+if [[ -n "$SERVICE" ]]; then
     if systemctl is-active --quiet "$SERVICE"; then
         printf '\nSUCCESS: Syncro agent is already installed and %s is running. Nothing to do.\n' "$SERVICE"
         exit 0
@@ -131,13 +144,17 @@ rc=$?
 set -e
 
 # --- Verify -----------------------------------------------------------------
-info "Verifying $SERVICE..."
+info "Verifying Syncro service..."
 active=""
+SERVICE=""
 for ((i = 0; rc == 0 && i < VERIFY_TIMEOUT; i++)); do
-    if systemctl is-active --quiet "$SERVICE"; then active=1; break; fi
+    [[ -n "$SERVICE" ]] || SERVICE="$(find_service)"
+    if [[ -n "$SERVICE" ]] && systemctl is-active --quiet "$SERVICE"; then active=1; break; fi
     sleep 1
 done
-enabled="$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)"
+[[ -n "$SERVICE" ]] || SERVICE="$(find_service)"
+enabled=""
+[[ -n "$SERVICE" ]] && enabled="$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)"
 
 if [[ $rc -eq 0 && -n "$active" ]]; then
     printf '\nSUCCESS: Syncro agent installed on %s.\n' "$(hostname)"
@@ -147,8 +164,12 @@ fi
 
 printf '\n' >&2
 [[ $rc -ne 0 ]] && warn "Installer exited with code $rc."
-[[ -z "$active" ]] && warn "$SERVICE is not active (enabled: ${enabled:-not found})."
-if command -v journalctl >/dev/null 2>&1 && [[ -n "$enabled" ]]; then
+if [[ -z "$SERVICE" ]]; then
+    warn "No Syncro systemd unit found (looked for: $SERVICE_CANDIDATES)."
+elif [[ -z "$active" ]]; then
+    warn "$SERVICE is not active (enabled: ${enabled:-unknown})."
+fi
+if command -v journalctl >/dev/null 2>&1 && [[ -n "$SERVICE" ]]; then
     printf '\nLast service log lines:\n' >&2
     journalctl -u "$SERVICE" -n 20 --no-pager >&2 || true
 fi
